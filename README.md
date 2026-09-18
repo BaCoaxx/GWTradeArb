@@ -1,9 +1,11 @@
-"""Phase 2 of GWTradeArb: public Kamadan trade-chat fetch + parse.
+# GWTradeArb — Phase 3
 
-GWTradeArb will become a Guild Wars Kamadan trading **opportunity scanner**.
-This repository is **Phase 2 only**: scrape public JSON, parse it deterministically,
-and print listing atoms. It does not match buyers to sellers, persist a database,
-or ship a UI.
+Public Kamadan trade-chat **fetch + parse + gold WTS↔WTB matching**.
+No Guild Wars automation, no whispers, no stored credentials, no LLM.
+
+You still execute every trade by hand. Chat listings vanish. A positive
+`potential_difference` is a **spread between two public prices**, not
+guaranteed profit and not an executed trade.
 
 ## What this is (and is not)
 
@@ -11,8 +13,9 @@ This tool:
 
 - `GET`s public JSON from [decltype](https://kamadan.decltype.org/) and
   [GWToolbox](https://kamadan.gwtoolbox.com/)
-- splits WTS/WTB lines into listing atoms
-- extracts item / quantity / gold-or-shorthand price **only when confident**
+- splits WTS/WTB lines into listing atoms (Phase 2)
+- matches high-confidence **gold** WTS against WTB when the item, unit, and
+  quantities line up (Phase 3)
 
 This tool **never**:
 
@@ -20,7 +23,7 @@ This tool **never**:
 - sends whispers or trades
 - drives mouse or keyboard
 - stores game credentials
-- depends on an LLM to parse chat
+- depends on an LLM to parse or match chat
 
 If a source is down, the other source still runs.
 
@@ -28,14 +31,17 @@ If a source is down, the other source still runs.
 
 ```
 src/gwtradearb/
-  models/listing.py      RawMessage + Listing
-  scrapers/decltype.py   GET https://kamadan.decltype.org/api/
-  scrapers/gwtoolbox.py  GET https://kamadan.gwtoolbox.com/m
-  parsing/parser.py      deterministic gold-first parser
-  fingerprint.py         within-source ids + content fingerprints
-  collect.py             fetch both sources, isolate failures
-  cli.py                 one-shot smoke entry
-tests/fixtures/          anonymised public JSON captures
+  models/listing.py         RawMessage + Listing
+  models/opportunity.py     Opportunity (a WTS↔WTB pair)
+  scrapers/decltype.py      GET https://kamadan.decltype.org/api/
+  scrapers/gwtoolbox.py     GET https://kamadan.gwtoolbox.com/m
+  parsing/parser.py         deterministic gold-first parser
+  matching/aliases.py       explicit item shorthand table
+  matching/matcher.py       match_listings(listings) -> list[Opportunity]
+  fingerprint.py            within-source ids + content fingerprints
+  collect.py                fetch both sources, isolate failures
+  cli.py                    one-shot smoke entry
+tests/fixtures/             anonymised public JSON captures
 ```
 
 ## Setup
@@ -61,7 +67,19 @@ python -m gwtradearb --high-only
 python -m gwtradearb --json
 ```
 
-`--high-only` prints gold listings the later matching engine should consider.
+Fetch, parse, **match**, print opportunities:
+
+```bash
+python -m gwtradearb --match
+python -m gwtradearb --match --high-only
+python -m gwtradearb --match --listings
+python -m gwtradearb --match --json
+python -m gwtradearb --match --search ecto
+```
+
+`--high-only` still filters the listing dump to high-confidence gold rows.
+The matcher **always** ignores low-confidence and non-gold listings, with or
+without that flag.
 
 ## Tests
 
@@ -82,7 +100,7 @@ Fixture tests always run offline. Live smokes hit the public endpoints and
   Example: `WTS Armbraces 30e/ea -- WTB Mini Rift Warden 15a` → two atoms.
 - Gold prices: `100k`, `45k`, `12,5k`, `g`. `k` means ×1000 gold.
 - Ecto `e` and armbrace `a` are recorded as those units and **never high-confidence**
-  in this phase (no conversion table yet).
+  (no conversion table yet), so they never enter the matcher.
 - Quantities: `x2`, `(5x)`, `8 for 100k`, `/ea`, `/stack`. `8 for 100k (5x)` uses
   bundle size 8, not the extra lot marker.
 - Missing intent, item, quantity, or a comparable gold price → `null` fields and
@@ -92,9 +110,60 @@ Fixture tests always run offline. Live smokes hit the public endpoints and
 Dedup:
 
 - Within source: decltype `id`, gwtoolbox `t`.
-- Cross-source (later): SHA-256 of normalised player + message (`content_fingerprint`).
+- Cross-source listing identity: SHA-256 of normalised player + message
+  (`content_fingerprint`). The matcher uses this so the same chat line mirrored
+  on both sites is one logical side.
 
 GWToolbox `r` is stored as `replaces_id` and is not collapsed yet.
+
+## How Phase 2 prices are stored (needed for matching)
+
+`Listing.price_amount` is the **parsed price token**, not a rewritten inventory total.
+
+| Chat                         | qty | `price_amount` | Basis the matcher uses |
+|------------------------------|-----|----------------|------------------------|
+| `WTS shield 50k`             | 1   | 50000          | each (qty 1)           |
+| `WTB ectos 13k/ea`           | 1   | 13000          | each                   |
+| `WTB ectos 13k/ea x5`        | 5   | 13000          | each (`/ea`)           |
+| `WTB Ectos 8 for 100k`       | 8   | 100000         | lot (bundle)           |
+| `wts 8 ectos 100k`           | 8   | 100000         | lot (qty>1, no `/ea`)  |
+
+`potential_difference`, `sell_price`, and `buy_price` on an Opportunity are gold
+**for the fill quantity** (the overlapping lot), not leftover per-unit quotes.
+
+## Matcher rules (Phase 3)
+
+`match_listings(listings) -> list[Opportunity]` is deterministic.
+
+An opportunity is created only when **all** of these hold:
+
+1. **Same item** after normalisation (lowercase, punctuation stripped) and an
+   explicit alias table (`ecto` / `ectos` / `ectoplasm` → `glob of ectoplasm`,
+   `lockpick` / `lockpicks` → `lockpick`). No fuzzy / substring / wiki matching.
+2. One side `WTS`, the other `WTB`.
+3. Both `parse_confidence == high` (which already implies gold in Phase 2).
+4. Same `quantity_unit` (`each` vs `stack` do not mix).
+5. Compatible quantities without inventing a split:
+   - **Each-priced** lines may partial-fill (`fill_qty = min(qty)`).
+   - **Lots** (`N for 100k`, `N=100k`, `N/100k`, or qty>1 without `/ea`) are
+     all-or-nothing. An `8 for 100k` seller is never assumed to sell 1-of-8.
+     A buyer of 10 each *can* take a whole lot of 8.
+6. `WTS` unit gold **<** `WTB` unit gold. Otherwise no opportunity.
+7. Different players (normalised). You cannot arb with yourself.
+8. Different `content_fingerprint` (do not pair a line with its other-site mirror
+   as the counterparty).
+
+`opportunity_key` is a SHA-256 of canonical item + fill qty + each side's
+`(content_fingerprint, intent, item, quantity_unit)`. Rescans and decltype /
+GWToolbox mirrors of the same chat line do not multiply a pair.
+
+Rank: fresher pair first (`max(wts timestamp, wtb timestamp)`), then larger
+`potential_difference`, then `opportunity_key`.
+
+### What `potential_difference` is not
+
+It is **not** guaranteed profit, actual profit, or a completed trade. The
+other player may be gone, joking, or already filled. Confirm in-game, by hand.
 
 ## Public HTTP sources
 
@@ -105,7 +174,7 @@ GWToolbox `r` is stored as `replaces_id` and is not collapsed yet.
 
 The GWToolbox LZ-compressed WebSocket is **out of scope** for v1.
 
-Requests send a identifying `User-Agent` (`GWTradeArb/0.2 … no game automation`)
+Requests send a identifying `User-Agent` (`GWTradeArb/0.3 … no game automation`)
 and a 15s timeout.
 
 Fixtures in `tests/fixtures/` are anonymised captures of those public JSON
@@ -114,17 +183,16 @@ trade chat).
 
 ## Limitations
 
-- No item catalogue / wiki aliasing (`gott` vs Gift of the Traveler).
-- No ecto↔gold or armbrace↔ecto conversion, so most Kamadan lines stay low.
-- No matching of WTS against WTB.
-- No history, SQLite, or UI.
+- Tiny item alias table. `gott` will not match Gift of the Traveler.
+- No ecto↔gold or armbrace↔ecto conversion; those listings stay unmatchable.
+- Lots are not split. Many real Kamadan lines therefore produce no opportunity.
+- No SQLite history, no New/Traded/Dismissed status, no UI.
 - Chat is noisy; high-confidence recall is intentionally low.
 
 ## Later phases (do not build here)
 
-- **Matching engine** — gold-only, high-confidence WTS vs WTB.
 - **SQLite persistence** — never commit DBs with personal data.
-- **PySide6 UI** and auto-scan scheduler.
+- **PySide6 UI** and auto-scan scheduler (New / Traded / Dismissed).
 - **Packaging** — PyInstaller / GitHub Release.
 - Still never: game automation, credential storage, LLM parsing.
 

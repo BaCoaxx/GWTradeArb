@@ -7,11 +7,13 @@ from gwtradearb.models.listing import (
     RawMessage,
     SourceName,
 )
+from gwtradearb.models.opportunity import Opportunity
 
 __all__ = [
     "Confidence",
     "Intent",
     "Listing",
+    "Opportunity",
     "PriceUnit",
     "QuantityUnit",
     "RawMessage",

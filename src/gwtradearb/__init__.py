@@ -1,10 +1,11 @@
-"""GWTradeArb Phase 2: fetch and parse public Kamadan trade chat.
+"""GWTradeArb: fetch, parse, and match public Kamadan trade chat.
 
 This package never automates Guild Wars, sends whispers, or stores credentials.
 """
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
-from gwtradearb.models import Listing, RawMessage
+from gwtradearb.matching import match_listings
+from gwtradearb.models import Listing, Opportunity, RawMessage
 
-__all__ = ["Listing", "RawMessage", "__version__"]
+__all__ = ["Listing", "Opportunity", "RawMessage", "match_listings", "__version__"]
