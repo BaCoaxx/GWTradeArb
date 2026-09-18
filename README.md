@@ -11,6 +11,8 @@ prices**, not guaranteed profit and not an executed trade. The UI never shows a
 "total profit" figure and never asks what you actually paid.
 
 **Latest standalone builds:** [GitHub Releases](https://github.com/BaCoaxx/GWTradeArb/releases/latest)
+(tag `v*`, for example `v0.5.0`). If that page has no assets yet, install from
+source below or run the **Release builds** workflow after the tag is on GitHub.
 
 ## What this is (and is not)
 
