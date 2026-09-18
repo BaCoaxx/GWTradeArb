@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gwtradearb"
-version = "0.6.1"
+version = "1.0.0"
 description = "Kamadan gold WTS/WTB scanner with local SQLite and a PySide6 UI (no Guild Wars automation)."
 readme = "README.md"
 requires-python = ">=3.11"

@@ -3,7 +3,7 @@
 This package never automates Guild Wars, sends whispers, or stores credentials.
 """
 
-__version__ = "0.6.1"
+__version__ = "1.0.0"
 
 from gwtradearb.matching import match_listings
 from gwtradearb.models import Listing, Opportunity, RawMessage
