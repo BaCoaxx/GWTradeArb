@@ -43,9 +43,24 @@ def test_main_window_loads_empty_db(tmp_path):
 def test_dense_layout_headers_and_status_dots(tmp_path):
     app, window = _make_window(tmp_path)
     from PySide6.QtCore import Qt
-    from PySide6.QtWidgets import QStatusBar, QTabBar
+    from PySide6.QtWidgets import (
+        QAbstractSpinBox,
+        QStatusBar,
+        QStyle,
+        QStyleOptionSpinBox,
+        QTabBar,
+        QWidget,
+    )
 
-    from gwtradearb.ui.window import COLUMNS, LOG_HEIGHT_PX, SourceStatusDot
+    from gwtradearb.ui.window import (
+        COLUMNS,
+        LOG_HEIGHT_PX,
+        SOURCE_STATUS_GAP_PX,
+        ArrowSpinBox,
+        SourceStatusDot,
+        SourceStatusIndicator,
+    )
+
     headers = [
         window.table.horizontalHeaderItem(index).text()
         for index in range(window.table.columnCount())
@@ -75,10 +90,58 @@ def test_dense_layout_headers_and_status_dots(tmp_path):
     assert window.table.horizontalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
     assert isinstance(window.tabs, QTabBar)
 
-    assert isinstance(window.decltype_badge, SourceStatusDot)
-    assert isinstance(window.gwtoolbox_badge, SourceStatusDot)
-    assert window.decltype_badge.text() == ""
-    assert window.gwtoolbox_badge.text() == ""
+    assert isinstance(window.lookback_spin, ArrowSpinBox)
+    assert (
+        window.lookback_spin.buttonSymbols()
+        == QAbstractSpinBox.ButtonSymbols.UpDownArrows
+    )
+    window.lookback_spin.resize(130, 26)
+    window.show()
+    app.processEvents()
+    opt = QStyleOptionSpinBox()
+    window.lookback_spin.initStyleOption(opt)
+    up_rect = window.lookback_spin.style().subControlRect(
+        QStyle.ComplexControl.CC_SpinBox,
+        opt,
+        QStyle.SubControl.SC_SpinBoxUp,
+        window.lookback_spin,
+    )
+    down_rect = window.lookback_spin.style().subControlRect(
+        QStyle.ComplexControl.CC_SpinBox,
+        opt,
+        QStyle.SubControl.SC_SpinBoxDown,
+        window.lookback_spin,
+    )
+    assert up_rect.width() >= 12
+    assert down_rect.width() >= 12
+    assert up_rect.height() >= 8
+    assert down_rect.height() >= 8
+
+    assert isinstance(window.decltype_badge, SourceStatusIndicator)
+    assert isinstance(window.gwtoolbox_badge, SourceStatusIndicator)
+    assert isinstance(window.decltype_badge.dot, SourceStatusDot)
+    assert isinstance(window.gwtoolbox_badge.dot, SourceStatusDot)
+    assert window.decltype_badge.label_text == "decltype:"
+    assert window.gwtoolbox_badge.label_text == "gwtoolbox:"
+    assert window.decltype_badge.caption.text() == "decltype:"
+    assert window.gwtoolbox_badge.caption.text() == "gwtoolbox:"
+    decltype_margins = window.decltype_badge.layout().contentsMargins()
+    gwtoolbox_margins = window.gwtoolbox_badge.layout().contentsMargins()
+    assert decltype_margins.left() >= 8
+    assert decltype_margins.right() >= 8
+    assert gwtoolbox_margins.left() >= 8
+    assert gwtoolbox_margins.right() >= 8
+    # Comfortable gap: each badge's outer padding plus an explicit spacer.
+    assert decltype_margins.right() + gwtoolbox_margins.left() >= 16
+    assert SOURCE_STATUS_GAP_PX >= 20
+    gap = window.statusBar().findChild(QWidget, "source_status_gap")
+    assert gap is not None
+    assert gap.width() >= 20
+    assert "Src" not in {
+        child.text()
+        for child in window.statusBar().findChildren(window.decltype_badge.caption.__class__)
+        if child.text()
+    }
     assert isinstance(window.statusBar(), QStatusBar)
     assert window.statusBar().isAncestorOf(window.decltype_badge)
     assert window.statusBar().isAncestorOf(window.gwtoolbox_badge)
@@ -87,8 +150,8 @@ def test_dense_layout_headers_and_status_dots(tmp_path):
     window._set_badge("gwtoolbox", False)
     assert window.decltype_badge.toolTip() == "Decltype: Online"
     assert window.gwtoolbox_badge.toolTip() == "GWToolbox: Offline"
-    assert "#16a34a" in window.decltype_badge.styleSheet()
-    assert "#dc2626" in window.gwtoolbox_badge.styleSheet()
+    assert "#16a34a" in window.decltype_badge.dot.styleSheet()
+    assert "#dc2626" in window.gwtoolbox_badge.dot.styleSheet()
 
     shortcuts = {action.shortcut().toString() for action in window.actions()}
     assert "Ctrl+R" in shortcuts

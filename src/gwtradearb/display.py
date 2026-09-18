@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
 SOURCE_HOME_URLS = {
     "decltype": "https://kamadan.decltype.org/",
@@ -25,18 +25,45 @@ SCAN_INTERVALS: tuple[tuple[str, int], ...] = (
 )
 
 
-def format_gold(amount: Decimal | str | int | None) -> str:
+# Guild Wars gold is whole coins. Keep two decimal places only for rare
+# fractional chat quotes (e.g. "12,5"); never dump binary-float residue.
+_GOLD_DISPLAY_QUANTUM = Decimal("0.01")
+_GOLD_NEAR_INTEGER = Decimal("0.001")
+
+
+def _as_display_gold(amount: Decimal | str | int | float | None) -> Decimal | None:
+    if amount is None or amount == "":
+        return None
+    try:
+        if isinstance(amount, bool):
+            return None
+        if isinstance(amount, Decimal):
+            value = amount
+        elif isinstance(amount, int):
+            value = Decimal(amount)
+        else:
+            # str(float) avoids Decimal(0.1)-style binary expansion.
+            value = Decimal(str(amount))
+    except (InvalidOperation, ValueError, ArithmeticError):
+        return None
+    quantized = value.quantize(_GOLD_DISPLAY_QUANTUM, rounding=ROUND_HALF_UP)
+    nearest = quantized.to_integral_value(rounding=ROUND_HALF_UP)
+    if abs(quantized - nearest) < _GOLD_NEAR_INTEGER:
+        return nearest
+    return quantized
+
+
+def format_gold(amount: Decimal | str | int | float | None) -> str:
     if amount is None or amount == "":
         return "—"
-    try:
-        value = amount if isinstance(amount, Decimal) else Decimal(str(amount))
-    except (InvalidOperation, ValueError):
+    value = _as_display_gold(amount)
+    if value is None:
         return str(amount)
     if value == value.to_integral_value() and value >= 1000 and value % 1000 == 0:
         return f"{int(value / 1000)}k gold"
     if value == value.to_integral_value():
         return f"{int(value)} gold"
-    return f"{value} gold"
+    return f"{value.normalize()} gold"
 
 
 def format_detected(unix_s: int | None) -> str:

@@ -8,9 +8,10 @@ import webbrowser
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QThread, QTimer, QUrl
-from PySide6.QtGui import QAction, QDesktopServices, QKeySequence
+from PySide6.QtCore import QPoint, QRect, Qt, QThread, QTimer, QUrl
+from PySide6.QtGui import QAction, QColor, QDesktopServices, QKeySequence, QPainter, QPolygon
 from PySide6.QtWidgets import (
+    QAbstractSpinBox,
     QApplication,
     QComboBox,
     QGroupBox,
@@ -27,6 +28,8 @@ from PySide6.QtWidgets import (
     QSpinBox,
     QSplitter,
     QStatusBar,
+    QStyle,
+    QStyleOptionSpinBox,
     QTableWidget,
     QTableWidgetItem,
     QTabBar,
@@ -96,6 +99,8 @@ TAB_STATUSES = (
 
 # Technical log stays a short strip so the table and listings keep the height.
 LOG_HEIGHT_PX = 80
+# Horizontal gap between labeled source badges so they do not read as Src 🟢🟢.
+SOURCE_STATUS_GAP_PX = 28
 
 APP_STYLESHEET = """
 QMainWindow { background: #f3f4f6; }
@@ -116,12 +121,35 @@ QPushButton {
 QPushButton:hover { background: #f9fafb; border-color: #9ca3af; }
 QPushButton:pressed { background: #e5e7eb; }
 QPushButton:disabled { color: #9ca3af; }
-QLineEdit, QComboBox, QSpinBox {
+QLineEdit, QComboBox {
     padding: 3px 6px;
     min-height: 22px;
     border: 1px solid #d1d5db;
     border-radius: 4px;
     background: #ffffff;
+}
+/* Fusion + a padded QSpinBox rule collapses PE_IndicatorSpinUp/Down into a
+   1px smear (thin black bars on Linux). Keep buttons sized and unpadded. */
+QSpinBox {
+    padding: 1px 2px 1px 6px;
+    min-height: 24px;
+    border: 1px solid #d1d5db;
+    border-radius: 4px;
+    background: #ffffff;
+}
+QSpinBox::up-button, QSpinBox::down-button {
+    subcontrol-origin: border;
+    width: 18px;
+    border-left: 1px solid #d1d5db;
+    background: #f3f4f6;
+}
+QSpinBox::up-button {
+    subcontrol-position: top right;
+    border-top-right-radius: 3px;
+}
+QSpinBox::down-button {
+    subcontrol-position: bottom right;
+    border-bottom-right-radius: 3px;
 }
 QTableWidget {
     background: #ffffff;
@@ -177,6 +205,79 @@ QStatusBar {
 """
 
 
+class ArrowSpinBox(QSpinBox):
+    """Fusion-safe spinbox: stylesheet-sized buttons plus painted triangles.
+
+    Qt's stylesheet style often leaves PE_IndicatorSpinUp/Down as a 1px line
+    (or omits the icon-theme glyph). Always draw clear up/down arrows.
+    """
+
+    _ARROW = QColor("#374151")
+    _ARROW_DISABLED = QColor("#9ca3af")
+    _BUTTON_WIDTH = 18
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.UpDownArrows)
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        super().paintEvent(event)
+        opt = QStyleOptionSpinBox()
+        self.initStyleOption(opt)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        color = self._ARROW if self.isEnabled() else self._ARROW_DISABLED
+        for subcontrol, up in (
+            (QStyle.SubControl.SC_SpinBoxUp, True),
+            (QStyle.SubControl.SC_SpinBoxDown, False),
+        ):
+            rect = self.style().subControlRect(
+                QStyle.ComplexControl.CC_SpinBox, opt, subcontrol, self
+            )
+            if rect.width() < 8 or rect.height() < 6:
+                rect = self._fallback_button_rect(up)
+            self._paint_arrow(painter, rect, up=up, color=color)
+        painter.end()
+
+    def _fallback_button_rect(self, up: bool) -> QRect:
+        inner = self.rect().adjusted(1, 1, -1, -1)
+        width = self._BUTTON_WIDTH
+        height = max(8, inner.height() // 2)
+        left = inner.right() - width + 1
+        top = inner.top() if up else inner.bottom() - height + 1
+        return QRect(left, top, width, height)
+
+    @staticmethod
+    def _paint_arrow(painter: QPainter, rect: QRect, *, up: bool, color: QColor) -> None:
+        box = rect.adjusted(5, 3, -5, -3)
+        if box.width() < 6:
+            box.setWidth(6)
+            box.moveLeft(rect.center().x() - 3)
+        if box.height() < 4:
+            box.setHeight(4)
+            box.moveTop(rect.center().y() - 2)
+        mid_x = box.center().x()
+        if up:
+            points = QPolygon(
+                [
+                    QPoint(mid_x, box.top()),
+                    QPoint(box.left(), box.bottom()),
+                    QPoint(box.right(), box.bottom()),
+                ]
+            )
+        else:
+            points = QPolygon(
+                [
+                    QPoint(box.left(), box.top()),
+                    QPoint(box.right(), box.top()),
+                    QPoint(mid_x, box.bottom()),
+                ]
+            )
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(color)
+        painter.drawPolygon(points)
+
+
 class SourceStatusDot(QLabel):
     """Compact filled circle: green online, red offline, gray unknown."""
 
@@ -187,7 +288,7 @@ class SourceStatusDot(QLabel):
         self.source = source
         self._online: bool | None = None
         self.setFixedSize(12, 12)
-        self.setObjectName(f"{source}_status")
+        self.setObjectName(f"{source}_status_dot")
         self.setAccessibleName(SOURCE_LABELS.get(source, source))
         self.set_state(None)
 
@@ -205,6 +306,34 @@ class SourceStatusDot(QLabel):
         self.setStyleSheet(
             f"QLabel {{ background-color: {color}; border-radius: 6px; }}"
         )
+
+
+class SourceStatusIndicator(QWidget):
+    """Labeled source badge: `decltype: ●` with comfortable outer padding."""
+
+    def __init__(self, source: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.source = source
+        self.setObjectName(f"{source}_status")
+        self.setAccessibleName(SOURCE_LABELS.get(source, source))
+        self.caption = QLabel(f"{source}:")
+        self.caption.setObjectName(f"{source}_status_caption")
+        self.caption.setStyleSheet("color: #4b5563;")
+        self.dot = SourceStatusDot(source)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(12, 2, 12, 2)
+        layout.setSpacing(6)
+        layout.addWidget(self.caption)
+        layout.addWidget(self.dot)
+        self.set_state(None)
+
+    def set_state(self, online: bool | None) -> None:
+        self.dot.set_state(online)
+        self.setToolTip(self.dot.toolTip())
+
+    @property
+    def label_text(self) -> str:
+        return self.caption.text()
 
 
 class NumericTableItem(QTableWidgetItem):
@@ -275,7 +404,7 @@ class MainWindow(QMainWindow):
 
         toolbar.addSeparator()
         toolbar.addWidget(QLabel(" Match lookback: "))
-        self.lookback_spin = QSpinBox()
+        self.lookback_spin = ArrowSpinBox()
         self.lookback_spin.setRange(MIN_MATCH_LOOKBACK_HOURS, MAX_MATCH_LOOKBACK_HOURS)
         self.lookback_spin.setValue(DEFAULT_MATCH_LOOKBACK_HOURS)
         self.lookback_spin.setSuffix(" hours")
@@ -284,7 +413,8 @@ class MainWindow(QMainWindow):
             "many hours. Default 12; longer windows are allowed. Live APIs are "
             "not paginated, so older rows come from history already stored here."
         )
-        self.lookback_spin.setMinimumWidth(110)
+        self.lookback_spin.setMinimumWidth(128)
+        self.lookback_spin.setFixedHeight(26)
         self.lookback_spin.valueChanged.connect(self._on_lookback_changed)
         toolbar.addWidget(self.lookback_spin)
 
@@ -423,12 +553,13 @@ class MainWindow(QMainWindow):
         status.showMessage(
             "Scrape, parse, and display only. Never automates Guild Wars, whispers, or trades."
         )
-        self.decltype_badge = SourceStatusDot("decltype")
-        self.gwtoolbox_badge = SourceStatusDot("gwtoolbox")
-        src_caption = QLabel("Src")
-        src_caption.setStyleSheet("color: #6b7280;")
-        status.addPermanentWidget(src_caption)
+        self.decltype_badge = SourceStatusIndicator("decltype")
+        self.gwtoolbox_badge = SourceStatusIndicator("gwtoolbox")
         status.addPermanentWidget(self.decltype_badge)
+        status_gap = QWidget()
+        status_gap.setFixedWidth(SOURCE_STATUS_GAP_PX)
+        status_gap.setObjectName("source_status_gap")
+        status.addPermanentWidget(status_gap)
         status.addPermanentWidget(self.gwtoolbox_badge)
         self.setStatusBar(status)
 
