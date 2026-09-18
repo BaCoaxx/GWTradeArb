@@ -35,8 +35,9 @@ This tool **never**:
 - records actual gold exchanged
 
 If one public source is down, the other still runs. The status bar shows a
-green or red dot for each source (tooltip: `Decltype: Online` / `GWToolbox:
-Offline`) and scanning continues.
+labeled indicator for each source (`decltype: ●` and `gwtoolbox: ●`, green
+online / red offline / gray unknown; tooltip: `Decltype: Online` /
+`GWToolbox: Offline`) and scanning continues.
 
 ## Data sources
 

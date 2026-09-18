@@ -42,6 +42,16 @@ def test_lookback_hours_cli_bounds():
 def test_format_gold_and_filters():
     assert format_gold(Decimal("50000")) == "50k gold"
     assert format_gold("5000") == "5k gold"
+    assert format_gold(2) == "2 gold"
+    assert format_gold("12.5") == "12.5 gold"
+    # Binary / Decimal residue must not dump 20+ digits into the table.
+    assert format_gold(Decimal("2.0000000000000000000002")) == "2 gold"
+    assert format_gold("2.0000000000000000000002") == "2 gold"
+    assert format_gold(Decimal("10") / Decimal("3") * Decimal("3")) == "10 gold"
+    assert format_gold("9.999999999999999999999999999") == "10 gold"
+    assert format_gold(2.0) == "2 gold"
+    assert "e" not in format_gold(Decimal("2.0000000000000000000002")).lower()
+    assert format_gold(None) == "—"
     row = {
         "item_canonical": "glob of ectoplasm",
         "seller": "Ann",
