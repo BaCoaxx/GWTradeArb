@@ -118,7 +118,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--match",
         action="store_true",
-        help="After parsing, run the WTS↔WTB matcher and print opportunities.",
+        help="After parsing, run the WTS/WTB matcher and print opportunities.",
     )
     parser.add_argument(
         "--listings",
@@ -211,7 +211,20 @@ def _list_filter(args: argparse.Namespace) -> str | None:
     return args.list_status or "new"
 
 
+def _configure_stdio() -> None:
+    """Frozen Windows consoles default to cp1252; keep CLI output from crashing."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (OSError, ValueError, AttributeError):
+            continue
+
+
 def main(argv: list[str] | None = None) -> int:
+    _configure_stdio()
     args = build_parser().parse_args(argv)
     db_path = args.db or default_db_path()
 

@@ -58,6 +58,8 @@ def _extract(archive: Path, dest: Path) -> Path:
 def _run(binary: Path, args: list[str], *, db: Path | None = None) -> str:
     env = os.environ.copy()
     env.setdefault("QT_QPA_PLATFORM", "offscreen")
+    env.setdefault("PYTHONIOENCODING", "utf-8")
+    env.setdefault("PYTHONUTF8", "1")
     cmd = [str(binary), *args]
     if db is not None:
         cmd.extend(["--db", str(db)])

@@ -6,6 +6,13 @@ from gwtradearb.cli import _wants_gui, build_parser
 from gwtradearb.display import format_gold, row_matches_filters
 
 
+def test_help_text_encodes_to_cp1252():
+    # Packaged Windows consoles often use cp1252. --help must not raise UnicodeEncodeError.
+    help_text = build_parser().format_help()
+    help_text.encode("cp1252")
+    assert "WTS/WTB" in help_text
+
+
 def test_wants_gui_by_default_and_not_with_cli_actions():
     parser = build_parser()
     assert _wants_gui(parser.parse_args([])) is True
