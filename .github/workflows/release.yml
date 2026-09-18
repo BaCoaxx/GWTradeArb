@@ -7,6 +7,7 @@ name: Release builds
 on:
   push:
     tags: ["v*"]
+    branches: ["main"]
   workflow_dispatch:
 
 permissions:
@@ -67,7 +68,14 @@ jobs:
 
   release:
     needs: build
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    # Tags always publish. The initial main push (commit message contains v0.5.0)
+    # also publishes so this empty repo can get a Release without a git tag from
+    # an unauthenticated cloud VM. Later main pushes do not publish.
+    if: >-
+      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) ||
+      (github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+       contains(github.event.head_commit.message, 'v0.5.0')) ||
+      github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -83,6 +91,8 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ github.ref_type == 'tag' && github.ref_name || 'v0.5.0' }}
+          name: ${{ github.ref_type == 'tag' && github.ref_name || 'v0.5.0' }}
           files: |
             artifacts/GWTradeArb-Linux-x64.tar.gz
             artifacts/GWTradeArb-Windows-x64.zip
