@@ -22,6 +22,10 @@ env/
 *.db
 *.sqlite
 *.sqlite3
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+data/
 
 # Editor / OS
 .idea/

@@ -1,7 +1,8 @@
-"""Smoke-test CLI: fetch public JSON, parse listings, optionally match.
+"""CLI: fetch, parse, match, and persist. Never automates Guild Wars.
 
-Never automates Guild Wars, never sends whispers, never stores credentials.
-Listings can vanish; `potential_difference` is not executed profit.
+`potential_difference` is a chat-price spread, not executed profit.
+The local SQLite file stores public trade-chat metadata only — no credentials
+and no paid/received amounts.
 """
 
 from __future__ import annotations
@@ -13,6 +14,14 @@ import time
 
 from gwtradearb import __version__
 from gwtradearb.collect import ALL_SOURCES, collect
+from gwtradearb.database import (
+    default_db_path,
+    list_opportunities,
+    open_db,
+    persist_scan,
+    set_status,
+    stats,
+)
 from gwtradearb.matching import match_listings
 from gwtradearb.models import Listing, Opportunity
 
@@ -61,12 +70,32 @@ def _format_opportunity(opportunity: Opportunity, *, now: float) -> str:
     )
 
 
+def _format_stored_opportunity(row) -> str:
+    return (
+        f"[{row['status']:<9}] +{row['potential_difference']} gold  "
+        f"{row['item_canonical']} x{row['quantity']} {row['quantity_unit']}  "
+        f"{row['seller']} → {row['buyer']}  "
+        f"key={row['opportunity_key'][:12]}"
+    )
+
+
+def _format_stats(payload: dict) -> str:
+    return (
+        f"scans={payload['scans']}  listings={payload['listings']} "
+        f"(last_scan={payload['listings_last_scan']})\n"
+        f"opportunities={payload['opportunities']}  "
+        f"new={payload['new']} traded={payload['traded']} "
+        f"dismissed={payload['dismissed']} expired={payload['expired']}"
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="gwtradearb",
         description=(
             "Fetch Kamadan public trade JSON, parse WTS/WTB listing atoms, "
-            "and optionally match gold opportunities. Does not interact with Guild Wars."
+            "match gold opportunities, and optionally persist them locally. "
+            "Does not interact with Guild Wars."
         ),
     )
     parser.add_argument(
@@ -89,13 +118,50 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--match",
         action="store_true",
-        help="After parsing, run the WTS↔WTB matcher and print opportunities "
-        "instead of (or as well as) listing atoms.",
+        help="After parsing, run the WTS↔WTB matcher and print opportunities.",
     )
     parser.add_argument(
         "--listings",
         action="store_true",
-        help="With --match, also print listing atoms.",
+        help="With --match/--scan, also print listing atoms.",
+    )
+    parser.add_argument(
+        "--save",
+        action="store_true",
+        help="Persist listings and opportunities to the local SQLite file.",
+    )
+    parser.add_argument(
+        "--scan",
+        action="store_true",
+        help="Fetch, parse, match, and save (implies --match --save).",
+    )
+    parser.add_argument(
+        "--db",
+        metavar="PATH",
+        help="SQLite file (default: platform user-data dir, or GWTRADEARB_DB).",
+    )
+    parser.add_argument(
+        "--stats",
+        action="store_true",
+        help="Print DB counts (no profit total). Does not fetch unless --scan.",
+    )
+    parser.add_argument(
+        "--list",
+        action="store_true",
+        help="List persisted opportunities (does not fetch). Filter with --status.",
+    )
+    parser.add_argument(
+        "--status",
+        dest="list_status",
+        choices=("new", "traded", "dismissed", "expired", "all"),
+        default=None,
+        help="Status filter for --list (default: new).",
+    )
+    parser.add_argument(
+        "--mark",
+        nargs=2,
+        metavar=("KEY", "STATUS"),
+        help="Set an opportunity status (traded, dismissed, new, expired). Prefix ok.",
     )
     parser.add_argument(
         "--json",
@@ -107,69 +173,148 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _should_fetch(args: argparse.Namespace) -> bool:
+    if args.scan or args.save or args.match or args.search:
+        return True
+    reading = args.stats or args.list or args.mark is not None
+    return not reading
+
+
+def _list_filter(args: argparse.Namespace) -> str | None:
+    if not args.list:
+        return None
+    return args.list_status or "new"
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    sources = ALL_SOURCES if args.source == "both" else (args.source,)
-    result = collect(sources=sources, query=args.search)
-
-    for err in result.errors:
-        print(f"error: {err}", file=sys.stderr)
-
-    listings = result.high_listings if args.high_only else result.listings
-    high = len(result.high_listings)
-    low = len(result.listings) - high
-    opportunities = match_listings(result.listings) if args.match else []
+    db_path = args.db or default_db_path()
     now = time.time()
+    now_s = int(now)
+    payload: dict = {}
+    exit_code = 0
 
-    show_listings = (not args.match) or args.listings
+    if args.mark:
+        key, status = args.mark
+        try:
+            with open_db(db_path) as conn:
+                resolved = set_status(conn, key, status, now_unix_s=now_s)
+        except (KeyError, ValueError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        payload["marked"] = {"opportunity_key": resolved, "status": status}
+        if not args.as_json:
+            print(f"marked {resolved[:12]}… → {status}")
+
+    if _should_fetch(args):
+        sources = ALL_SOURCES if args.source == "both" else (args.source,)
+        started = int(time.time())
+        result = collect(sources=sources, query=args.search)
+        finished = int(time.time())
+        for err in result.errors:
+            print(f"error: {err}", file=sys.stderr)
+
+        do_match = args.match or args.save or args.scan
+        listings = result.high_listings if args.high_only else result.listings
+        high = len(result.high_listings)
+        low = len(result.listings) - high
+        opportunities = match_listings(result.listings) if do_match else []
+        show_listings = (not do_match) or args.listings
+
+        saved = None
+        if args.save or args.scan:
+            with open_db(db_path) as conn:
+                saved = persist_scan(
+                    conn,
+                    listings=result.listings,
+                    opportunities=opportunities,
+                    requested_sources=sources,
+                    fetched_from=result.fetched_from,
+                    message_count=len(result.messages),
+                    errors=result.errors,
+                    query=args.search,
+                    started_at_unix_s=started,
+                    finished_at_unix_s=finished,
+                )
+                saved["db_path"] = str(db_path)
+
+        if args.as_json:
+            payload.update(
+                {
+                    "fetched_from": result.fetched_from,
+                    "message_count": len(result.messages),
+                    "high": high,
+                    "low": low,
+                    "errors": result.errors,
+                    "db_path": str(db_path) if saved else None,
+                    "saved": saved,
+                }
+            )
+            if show_listings:
+                payload["listings"] = [row.to_dict() for row in listings]
+            if do_match:
+                payload["opportunities"] = [row.to_dict() for row in opportunities]
+                payload["opportunity_count"] = len(opportunities)
+        else:
+            summary = (
+                f"sources={','.join(result.fetched_from) or 'none'}  "
+                f"messages={len(result.messages)}  listings={len(result.listings)} "
+                f"(high={high} low={low})"
+            )
+            if do_match:
+                summary += f"  opportunities={len(opportunities)}"
+            if saved:
+                summary += f"  saved={db_path}"
+                if saved["expired"]:
+                    summary += f"  expired={saved['expired']}"
+            print(summary)
+            if show_listings:
+                for listing in listings:
+                    print(_format_listing(listing))
+                if not listings:
+                    print("no listings to display")
+            if do_match:
+                if show_listings:
+                    print("--- opportunities ---")
+                for opportunity in opportunities:
+                    print(_format_opportunity(opportunity, now=now))
+                if not opportunities:
+                    print(
+                        "no opportunities "
+                        "(need a high-confidence gold WTS cheaper than a WTB for the same item)"
+                    )
+                else:
+                    print(
+                        "potential_difference is a chat-price spread, not guaranteed profit. "
+                        "Execute trades manually; listings may vanish."
+                    )
+
+        if not result.fetched_from:
+            exit_code = 1
+
+    if _list_filter(args) is not None or args.stats:
+        with open_db(db_path) as conn:
+            if args.stats:
+                payload["stats"] = stats(conn)
+                if not args.as_json:
+                    print(_format_stats(payload["stats"]))
+            listed_status = _list_filter(args)
+            if listed_status is not None:
+                rows = list_opportunities(conn, listed_status)
+                payload["listed"] = [dict(row) for row in rows]
+                payload["list_status"] = listed_status
+                if not args.as_json:
+                    if not rows:
+                        print(f"no {listed_status} opportunities in {db_path}")
+                    for row in rows:
+                        print(_format_stored_opportunity(row))
 
     if args.as_json:
-        payload = {
-            "fetched_from": result.fetched_from,
-            "message_count": len(result.messages),
-            "high": high,
-            "low": low,
-            "errors": result.errors,
-        }
-        if show_listings:
-            payload["listings"] = [row.to_dict() for row in listings]
-        if args.match:
-            payload["opportunities"] = [row.to_dict() for row in opportunities]
-            payload["opportunity_count"] = len(opportunities)
-        print(json.dumps(payload, indent=2, ensure_ascii=False))
-    else:
-        summary = (
-            f"sources={','.join(result.fetched_from) or 'none'}  "
-            f"messages={len(result.messages)}  listings={len(result.listings)} "
-            f"(high={high} low={low})"
-        )
-        if args.match:
-            summary += f"  opportunities={len(opportunities)}"
-        print(summary)
-        if show_listings:
-            for listing in listings:
-                print(_format_listing(listing))
-            if not listings:
-                print("no listings to display")
-        if args.match:
-            if show_listings:
-                print("--- opportunities ---")
-            for opportunity in opportunities:
-                print(_format_opportunity(opportunity, now=now))
-            if not opportunities:
-                print(
-                    "no opportunities "
-                    "(need a high-confidence gold WTS cheaper than a WTB for the same item)"
-                )
-            else:
-                print(
-                    "potential_difference is a chat-price spread, not guaranteed profit. "
-                    "Execute trades manually; listings may vanish."
-                )
+        if "db_path" not in payload:
+            payload["db_path"] = str(db_path)
+        print(json.dumps(payload, indent=2, ensure_ascii=False, default=str))
 
-    if not result.fetched_from:
-        return 1
-    return 0
+    return exit_code
 
 
 if __name__ == "__main__":

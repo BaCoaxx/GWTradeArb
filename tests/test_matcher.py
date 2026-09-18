@@ -76,13 +76,29 @@ def test_happy_path_equal_qty_lot_prices():
     assert price_basis(wtb) == "lot"
 
 
-def test_ecto_alias_matches_across_wording():
-    wts = _high("WTS ecto 12k ea", player="Ann", native_id="s1")
-    wtb = _high("WTB ectoplasm 13k each", player="Bob", native_id="b1")
+def test_ecto_case_and_plural_match_via_canonical_key():
+    wts = _high("WTS ECTOS 12k ea", player="Ann", native_id="s1")
+    wtb = _high("WTB ecto 13k ea", player="Bob", native_id="b1")
     opps = match_listings([wts, wtb])
     assert len(opps) == 1
     assert opps[0].item == "glob of ectoplasm"
     assert opps[0].potential_difference == Decimal("1000")
+
+
+def test_lockpick_case_and_plural_match():
+    wts = _high("WTS Lockpicks 1k each", player="Ann", native_id="s1")
+    wtb = _high("WTB lockpick 2k each", player="Bob", native_id="b1")
+    opps = match_listings([wts, wtb])
+    assert len(opps) == 1
+    assert opps[0].item == "lockpick"
+
+
+def test_general_plural_fold_mallyx_shields():
+    wts = _high("WTS mallyx shields 50k", player="Ann", native_id="s1")
+    wtb = _high("WTB Mallyx Shield 55k", player="Bob", native_id="b1")
+    opps = match_listings([wts, wtb])
+    assert len(opps) == 1
+    assert opps[0].item == "mallyx shield"
 
 
 def test_no_match_when_wts_price_not_lower():

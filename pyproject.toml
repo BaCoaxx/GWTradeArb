@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gwtradearb"
-version = "0.3.0"
-description = "Phase 3: scrape, parse, and match Guild Wars Kamadan gold WTS/WTB listings (no automation)."
+version = "0.4.0"
+description = "Phase 4: scrape, parse, match, and persist Guild Wars Kamadan gold WTS/WTB listings (no automation)."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
