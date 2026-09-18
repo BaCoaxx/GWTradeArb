@@ -11,7 +11,7 @@ prices**, not guaranteed profit and not an executed trade. The UI never shows a
 "total profit" figure and never asks what you actually paid.
 
 **Latest standalone builds:** [GitHub Releases](https://github.com/BaCoaxx/GWTradeArb/releases/latest)
-(tag `v*`, for example `v0.6.0`). If that page has no assets yet, install from
+(tag `v*`, for example `v0.6.1`). If that page has no assets yet, install from
 source below or run the **Release builds** workflow after the tag is on GitHub.
 
 ## What this is (and is not)
@@ -34,8 +34,9 @@ This tool **never**:
 - depends on an LLM
 - records actual gold exchanged
 
-If one public source is down, the other still runs. The UI shows Online/Offline
-badges and keeps going.
+If one public source is down, the other still runs. The status bar shows a
+green or red dot for each source (tooltip: `Decltype: Online` / `GWToolbox:
+Offline`) and scanning continues.
 
 ## Data sources
 
@@ -213,7 +214,7 @@ python packaging/smoke_archive.py
 rem → dist\GWTradeArb-Windows-x64.zip
 ```
 
-CI: push a `v*` tag (for example `v0.5.0`) or run **Release builds** via
+CI: push a `v*` tag (for example `v0.6.1`) or run **Release builds** via
 `workflow_dispatch`. The tag workflow attaches both archives to a GitHub
 Release. Windows verification is the Actions log for `Smoke packaged binary`
 on `windows-latest`.

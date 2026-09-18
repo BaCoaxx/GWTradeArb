@@ -23,12 +23,13 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
+    QSizePolicy,
     QSpinBox,
     QSplitter,
     QStatusBar,
     QTableWidget,
     QTableWidgetItem,
-    QTabWidget,
+    QTabBar,
     QToolBar,
     QVBoxLayout,
     QWidget,
@@ -62,12 +63,25 @@ from gwtradearb.ui.worker import ScanWorker
 
 COLUMNS = (
     "Item",
+    "Qty",
+    "Seller",
+    "Sell",
+    "Buyer",
+    "Buy",
+    "Diff",
+    "Src",
+    "Detected",
+    "Status",
+)
+
+COLUMN_HEADER_TIPS = (
+    "Item",
     "Quantity",
     "Seller",
-    "Sell Price",
+    "Sell price",
     "Buyer",
-    "Buy Price",
-    "Potential Difference",
+    "Buy price",
+    "Potential difference (chat-price spread, not profit)",
     "Source",
     "Detected",
     "Status",
@@ -79,6 +93,118 @@ TAB_STATUSES = (
     ("Dismissed", "dismissed"),
     ("Expired", "expired"),
 )
+
+# Technical log stays a short strip so the table and listings keep the height.
+LOG_HEIGHT_PX = 80
+
+APP_STYLESHEET = """
+QMainWindow { background: #f3f4f6; }
+QToolBar {
+    background: #ffffff;
+    border: none;
+    border-bottom: 1px solid #e5e7eb;
+    spacing: 6px;
+    padding: 3px 8px;
+}
+QToolBar QLabel { color: #4b5563; }
+QPushButton {
+    padding: 4px 10px;
+    border: 1px solid #d1d5db;
+    border-radius: 4px;
+    background: #ffffff;
+}
+QPushButton:hover { background: #f9fafb; border-color: #9ca3af; }
+QPushButton:pressed { background: #e5e7eb; }
+QPushButton:disabled { color: #9ca3af; }
+QLineEdit, QComboBox, QSpinBox {
+    padding: 3px 6px;
+    min-height: 22px;
+    border: 1px solid #d1d5db;
+    border-radius: 4px;
+    background: #ffffff;
+}
+QTableWidget {
+    background: #ffffff;
+    alternate-background-color: #f8fafc;
+    gridline-color: #e5e7eb;
+    font-size: 12px;
+    selection-background-color: #dbeafe;
+    selection-color: #111827;
+    border: 1px solid #e5e7eb;
+}
+QHeaderView::section {
+    background: #eef2f7;
+    color: #374151;
+    padding: 4px 6px;
+    border: none;
+    border-right: 1px solid #e5e7eb;
+    border-bottom: 1px solid #d1d5db;
+    font-size: 11px;
+    font-weight: 600;
+}
+QTabBar::tab {
+    padding: 5px 12px;
+    background: #e5e7eb;
+    border: 1px solid #d1d5db;
+    border-bottom: none;
+    margin-right: 2px;
+}
+QTabBar::tab:selected { background: #ffffff; font-weight: 600; }
+QGroupBox {
+    font-size: 11px;
+    font-weight: 600;
+    color: #4b5563;
+    border: 1px solid #e5e7eb;
+    border-radius: 4px;
+    margin-top: 8px;
+    padding: 6px 8px 4px 8px;
+}
+QGroupBox::title {
+    subcontrol-origin: margin;
+    left: 8px;
+    padding: 0 4px;
+}
+QPlainTextEdit {
+    background: #ffffff;
+    border: 1px solid #e5e7eb;
+    font-size: 12px;
+}
+QStatusBar {
+    background: #ffffff;
+    border-top: 1px solid #e5e7eb;
+    font-size: 11px;
+}
+"""
+
+
+class SourceStatusDot(QLabel):
+    """Compact filled circle: green online, red offline, gray unknown."""
+
+    _COLORS = {None: "#9ca3af", True: "#16a34a", False: "#dc2626"}
+
+    def __init__(self, source: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.source = source
+        self._online: bool | None = None
+        self.setFixedSize(12, 12)
+        self.setObjectName(f"{source}_status")
+        self.setAccessibleName(SOURCE_LABELS.get(source, source))
+        self.set_state(None)
+
+    def set_state(self, online: bool | None) -> None:
+        self._online = online
+        label = SOURCE_LABELS.get(self.source, self.source)
+        if online is None:
+            state = "Unknown"
+        elif online:
+            state = "Online"
+        else:
+            state = "Offline"
+        self.setToolTip(f"{label}: {state}")
+        color = self._COLORS[online]
+        self.setStyleSheet(
+            f"QLabel {{ background-color: {color}; border-radius: 6px; }}"
+        )
 
 
 class NumericTableItem(QTableWidgetItem):
@@ -105,6 +231,7 @@ class MainWindow(QMainWindow):
         self._scan_busy = False
 
         self.setWindowTitle(f"GWTradeArb {__version__}")
+        self.setStyleSheet(APP_STYLESHEET)
         self._restore_size()
         self._build()
         self._load_interval_setting()
@@ -116,14 +243,14 @@ class MainWindow(QMainWindow):
         )
 
     def _restore_size(self) -> None:
-        width, height = 1100, 720
+        width, height = 1180, 740
         try:
             with open_db(self.db_path) as conn:
                 width = int(get_setting(conn, "ui_window_width", str(width)) or width)
                 height = int(get_setting(conn, "ui_window_height", str(height)) or height)
         except (TypeError, ValueError, OSError):
             pass
-        self.resize(max(800, width), max(560, height))
+        self.resize(max(960, width), max(600, height))
 
     def _build(self) -> None:
         toolbar = QToolBar("Main")
@@ -157,18 +284,16 @@ class MainWindow(QMainWindow):
             "many hours. Default 12; longer windows are allowed. Live APIs are "
             "not paginated, so older rows come from history already stored here."
         )
-        self.lookback_spin.setMinimumWidth(120)
+        self.lookback_spin.setMinimumWidth(110)
         self.lookback_spin.valueChanged.connect(self._on_lookback_changed)
         toolbar.addWidget(self.lookback_spin)
 
-        toolbar.addSeparator()
-        self.decltype_badge = QLabel("Decltype: —")
-        self.gwtoolbox_badge = QLabel("GWToolbox: —")
-        toolbar.addWidget(self.decltype_badge)
-        toolbar.addWidget(self.gwtoolbox_badge)
+        spacer = QWidget()
+        spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        toolbar.addWidget(spacer)
 
         self.progress = QProgressBar()
-        self.progress.setMaximumWidth(160)
+        self.progress.setMaximumWidth(120)
         self.progress.setTextVisible(False)
         self.progress.setRange(0, 1)
         self.progress.setValue(0)
@@ -189,8 +314,8 @@ class MainWindow(QMainWindow):
         self.source_filter.addItem("GWToolbox", "gwtoolbox")
         self.source_filter.currentIndexChanged.connect(self._apply_filters)
         self.min_diff = QLineEdit()
-        self.min_diff.setPlaceholderText("Min potential_difference")
-        self.min_diff.setMaximumWidth(180)
+        self.min_diff.setPlaceholderText("Min spread")
+        self.min_diff.setMaximumWidth(110)
         self.min_diff.editingFinished.connect(self._apply_filters)
         filter_bar.addWidget(QLabel("Item"))
         filter_bar.addWidget(self.item_filter, 2)
@@ -202,9 +327,11 @@ class MainWindow(QMainWindow):
         filter_bar.addWidget(traded_btn)
         filter_bar.addWidget(dismiss_btn)
 
-        self.tabs = QTabWidget()
+        self.tabs = QTabBar()
+        self.tabs.setExpanding(False)
+        self.tabs.setDrawBase(False)
         for title, _status in TAB_STATUSES:
-            self.tabs.addTab(QWidget(), title)
+            self.tabs.addTab(title)
         self.tabs.currentChanged.connect(self.refresh_from_db)
 
         self.table = QTableWidget(0, len(COLUMNS))
@@ -213,13 +340,20 @@ class MainWindow(QMainWindow):
         self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.setSortingEnabled(True)
+        self.table.setAlternatingRowColors(True)
+        self.table.setWordWrap(False)
+        self.table.setShowGrid(True)
+        self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.table.setVerticalScrollMode(QTableWidget.ScrollMode.ScrollPerPixel)
         self.table.verticalHeader().setVisible(False)
-        self.table.horizontalHeader().setStretchLastSection(True)
-        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.table.verticalHeader().setDefaultSectionSize(22)
+        self.table.setMinimumHeight(200)
+        self._configure_columns()
         self.table.itemSelectionChanged.connect(self._show_detail)
 
         self.detail = QPlainTextEdit()
         self.detail.setReadOnly(True)
+        self.detail.setMinimumHeight(150)
         self.detail.setPlaceholderText("Select a row to view original listing messages.")
         open_decl = QPushButton("Open Decltype")
         open_decl.clicked.connect(lambda: self._open_source("decltype"))
@@ -239,11 +373,15 @@ class MainWindow(QMainWindow):
         splitter = QSplitter(Qt.Orientation.Vertical)
         splitter.addWidget(self.table)
         splitter.addWidget(detail_box)
-        splitter.setStretchFactor(0, 3)
-        splitter.setStretchFactor(1, 1)
+        splitter.setChildrenCollapsible(False)
+        splitter.setStretchFactor(0, 5)
+        splitter.setStretchFactor(1, 2)
+        splitter.setSizes([420, 200])
+        self.main_splitter = splitter
 
         stats_box = QGroupBox("Statistics")
         stats_form = QHBoxLayout(stats_box)
+        stats_form.setContentsMargins(8, 2, 8, 2)
         self.stat_found = QLabel("Found: 0")
         self.stat_active = QLabel("Active: 0")
         self.stat_traded = QLabel("Traded: 0")
@@ -266,9 +404,13 @@ class MainWindow(QMainWindow):
         self.log.setReadOnly(True)
         self.log.setMaximumBlockCount(500)
         self.log.setPlaceholderText("Technical scanner log")
+        self.log.setFixedHeight(LOG_HEIGHT_PX)
+        self.log.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
 
         center = QWidget()
         layout = QVBoxLayout(center)
+        layout.setContentsMargins(8, 6, 8, 6)
+        layout.setSpacing(6)
         layout.addLayout(filter_bar)
         layout.addWidget(self.tabs)
         layout.addWidget(splitter, 1)
@@ -281,6 +423,13 @@ class MainWindow(QMainWindow):
         status.showMessage(
             "Scrape, parse, and display only. Never automates Guild Wars, whispers, or trades."
         )
+        self.decltype_badge = SourceStatusDot("decltype")
+        self.gwtoolbox_badge = SourceStatusDot("gwtoolbox")
+        src_caption = QLabel("Src")
+        src_caption.setStyleSheet("color: #6b7280;")
+        status.addPermanentWidget(src_caption)
+        status.addPermanentWidget(self.decltype_badge)
+        status.addPermanentWidget(self.gwtoolbox_badge)
         self.setStatusBar(status)
 
         scan_action = QAction("Scan Now", self)
@@ -369,15 +518,28 @@ class MainWindow(QMainWindow):
         self.log.appendPlainText(line)
         self.log.verticalScrollBar().setValue(self.log.verticalScrollBar().maximum())
 
+    def _configure_columns(self) -> None:
+        header = self.table.horizontalHeader()
+        header.setHighlightSections(False)
+        header.setMinimumSectionSize(44)
+        header.setDefaultAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        header.setStretchLastSection(False)
+        compact = {1, 3, 5, 6, 7, 8, 9}
+        for index in range(len(COLUMNS)):
+            mode = (
+                QHeaderView.ResizeMode.ResizeToContents
+                if index in compact
+                else QHeaderView.ResizeMode.Stretch
+            )
+            header.setSectionResizeMode(index, mode)
+            tip = COLUMN_HEADER_TIPS[index]
+            item = self.table.horizontalHeaderItem(index)
+            if item is not None:
+                item.setToolTip(tip)
+
     def _set_badge(self, source: str, online: bool | None) -> None:
-        label = SOURCE_LABELS.get(source, source)
         widget = self.decltype_badge if source == "decltype" else self.gwtoolbox_badge
-        if online is None:
-            widget.setText(f"{label}: —")
-        elif online:
-            widget.setText(f"{label}: Online")
-        else:
-            widget.setText(f"{label}: Offline")
+        widget.set_state(online)
 
     def start_scan(self) -> None:
         if self._scan_busy:
@@ -502,6 +664,7 @@ class MainWindow(QMainWindow):
                     item.setData(Qt.ItemDataRole.UserRole + 1, row.get("opportunity_key"))
                 self.table.setItem(index, column, item)
         self.table.setSortingEnabled(True)
+        self._configure_columns()
         if self.table.rowCount():
             self.table.selectRow(0)
         else:
@@ -601,6 +764,7 @@ def run_gui(db_path: str | Path | None = None) -> int:
     app.setApplicationName("GWTradeArb")
     app.setApplicationVersion(__version__)
     app.setStyle("Fusion")
+    app.setStyleSheet(APP_STYLESHEET)
     window = MainWindow(db_path)
     window.show()
     return app.exec()
