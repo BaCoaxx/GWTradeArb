@@ -99,6 +99,8 @@ TAB_STATUSES = (
 
 # Technical log stays a short strip so the table and listings keep the height.
 LOG_HEIGHT_PX = 80
+# Horizontal gap between labeled source badges so they do not read as Src 🟢🟢.
+SOURCE_STATUS_GAP_PX = 28
 
 APP_STYLESHEET = """
 QMainWindow { background: #f3f4f6; }
@@ -554,6 +556,10 @@ class MainWindow(QMainWindow):
         self.decltype_badge = SourceStatusIndicator("decltype")
         self.gwtoolbox_badge = SourceStatusIndicator("gwtoolbox")
         status.addPermanentWidget(self.decltype_badge)
+        status_gap = QWidget()
+        status_gap.setFixedWidth(SOURCE_STATUS_GAP_PX)
+        status_gap.setObjectName("source_status_gap")
+        status.addPermanentWidget(status_gap)
         status.addPermanentWidget(self.gwtoolbox_badge)
         self.setStatusBar(status)
 

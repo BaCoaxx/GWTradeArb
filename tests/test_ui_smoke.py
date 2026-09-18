@@ -49,11 +49,13 @@ def test_dense_layout_headers_and_status_dots(tmp_path):
         QStyle,
         QStyleOptionSpinBox,
         QTabBar,
+        QWidget,
     )
 
     from gwtradearb.ui.window import (
         COLUMNS,
         LOG_HEIGHT_PX,
+        SOURCE_STATUS_GAP_PX,
         ArrowSpinBox,
         SourceStatusDot,
         SourceStatusIndicator,
@@ -129,8 +131,12 @@ def test_dense_layout_headers_and_status_dots(tmp_path):
     assert decltype_margins.right() >= 8
     assert gwtoolbox_margins.left() >= 8
     assert gwtoolbox_margins.right() >= 8
-    # Comfortable gap: each badge's outer padding plus the sibling's.
+    # Comfortable gap: each badge's outer padding plus an explicit spacer.
     assert decltype_margins.right() + gwtoolbox_margins.left() >= 16
+    assert SOURCE_STATUS_GAP_PX >= 20
+    gap = window.statusBar().findChild(QWidget, "source_status_gap")
+    assert gap is not None
+    assert gap.width() >= 20
     assert "Src" not in {
         child.text()
         for child in window.statusBar().findChildren(window.decltype_badge.caption.__class__)
