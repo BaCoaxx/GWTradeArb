@@ -41,12 +41,11 @@ def test_main_window_loads_empty_db(tmp_path):
 
 
 def test_dense_layout_headers_and_status_dots(tmp_path):
+    app, window = _make_window(tmp_path)
     from PySide6.QtCore import Qt
     from PySide6.QtWidgets import QStatusBar, QTabBar
 
     from gwtradearb.ui.window import COLUMNS, LOG_HEIGHT_PX, SourceStatusDot
-
-    app, window = _make_window(tmp_path)
     headers = [
         window.table.horizontalHeaderItem(index).text()
         for index in range(window.table.columnCount())
@@ -71,7 +70,8 @@ def test_dense_layout_headers_and_status_dots(tmp_path):
     assert window.log.minimumHeight() == LOG_HEIGHT_PX
     assert window.detail.minimumHeight() >= 150
     assert window.table.minimumHeight() >= 200
-    assert window.main_splitter.stretchFactor(0) > window.main_splitter.stretchFactor(1)
+    assert window.main_splitter.count() == 2
+    assert window.main_splitter.sizes()[0] >= window.main_splitter.sizes()[1]
     assert window.table.horizontalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
     assert isinstance(window.tabs, QTabBar)
 
