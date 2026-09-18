@@ -46,9 +46,9 @@ def _extract(archive: Path, dest: Path) -> Path:
         with zipfile.ZipFile(archive) as zf:
             zf.extractall(dest)
     binary_name = "GWTradeArb.exe" if sys.platform == "win32" else "GWTradeArb"
-    matches = list(dest.rglob(binary_name))
+    matches = [path for path in dest.rglob(binary_name) if path.is_file()]
     if not matches:
-        raise SystemExit(f"No {binary_name} found inside {archive.name}")
+        raise SystemExit(f"No {binary_name} file found inside {archive.name}")
     binary = matches[0]
     if sys.platform != "win32":
         binary.chmod(binary.stat().st_mode | 0o111)
