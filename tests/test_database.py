@@ -6,6 +6,7 @@ from gwtradearb.database import (
     expire_absent_opportunities,
     listing_key,
     list_opportunities,
+    list_opportunity_details,
     load_listings,
     open_db,
     persist_scan,
@@ -289,3 +290,28 @@ def test_expire_helper_skips_when_incomplete(tmp_path):
         )
         assert n == 0
         assert conn.execute("SELECT status FROM opportunities").fetchone()[0] == "new"
+
+
+def test_opportunity_details_join_original_messages(tmp_path):
+    db = tmp_path / "t.sqlite"
+    wts = _listing("WTS mallyx shield 50k", player="Ann", native_id="s1")
+    wtb = _listing("WTB mallyx shield 55k", player="Bob", native_id="b1")
+    with open_db(db) as conn:
+        persist_scan(
+            conn,
+            listings=[wts, wtb],
+            opportunities=match_listings([wts, wtb]),
+            requested_sources=("decltype",),
+            fetched_from=("decltype",),
+            message_count=2,
+            errors=[],
+            query=None,
+            started_at_unix_s=1,
+            finished_at_unix_s=2,
+        )
+        details = list_opportunity_details(conn, "new")
+    assert len(details) == 1
+    assert "mallyx shield 50k" in (details[0]["wts_message"] or "")
+    assert "mallyx shield 55k" in (details[0]["wtb_message"] or "")
+    assert details[0]["wts_player"] == "Ann"
+    assert details[0]["wtb_player"] == "Bob"

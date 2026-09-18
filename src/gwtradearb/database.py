@@ -26,7 +26,7 @@ SCHEMA_VERSION = 1
 STATUSES = ("new", "traded", "dismissed", "expired")
 
 DEFAULT_SETTINGS = {
-    "scan_interval_seconds": "60",
+    "scan_interval_seconds": "0",
     "retention_days": "30",
     "expire_absent_on_complete_scan": "1",
     "ui_theme": "system",
@@ -592,6 +592,55 @@ def persist_scan(
         "complete": complete,
         "db_path": None,
     }
+
+
+def get_listing(conn: sqlite3.Connection, listing_key: str) -> sqlite3.Row | None:
+    return conn.execute(
+        "SELECT * FROM listings WHERE listing_key = ?",
+        (listing_key,),
+    ).fetchone()
+
+
+def list_opportunity_details(
+    conn: sqlite3.Connection,
+    status: str | None = "new",
+) -> list[dict[str, Any]]:
+    """Opportunities joined with both original listing rows for the UI detail pane."""
+    sql = """
+        SELECT
+            o.*,
+            wts.original_message AS wts_message,
+            wts.raw_span AS wts_span,
+            wts.source AS wts_source,
+            wts.native_id AS wts_native_id,
+            wts.player AS wts_player,
+            wts.timestamp_unix_s AS wts_listing_ts,
+            wts.item_raw AS wts_item_raw,
+            wts.price_amount AS wts_listing_price,
+            wts.price_unit AS wts_listing_unit,
+            wts.quantity AS wts_listing_qty,
+            wtb.original_message AS wtb_message,
+            wtb.raw_span AS wtb_span,
+            wtb.source AS wtb_source,
+            wtb.native_id AS wtb_native_id,
+            wtb.player AS wtb_player,
+            wtb.timestamp_unix_s AS wtb_listing_ts,
+            wtb.item_raw AS wtb_item_raw,
+            wtb.price_amount AS wtb_listing_price,
+            wtb.price_unit AS wtb_listing_unit,
+            wtb.quantity AS wtb_listing_qty
+        FROM opportunities o
+        LEFT JOIN listings wts ON wts.listing_key = o.wts_listing_key
+        LEFT JOIN listings wtb ON wtb.listing_key = o.wtb_listing_key
+    """
+    params: tuple = ()
+    if status not in (None, "all"):
+        if status not in STATUSES:
+            raise ValueError(f"status must be one of {STATUSES} or 'all'")
+        sql += " WHERE o.status = ?"
+        params = (status,)
+    sql += " ORDER BY o.detected_at_unix_s DESC, o.opportunity_key"
+    return [dict(row) for row in conn.execute(sql, params)]
 
 
 def list_opportunities(

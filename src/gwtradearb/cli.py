@@ -169,8 +169,33 @@ def build_parser() -> argparse.ArgumentParser:
         dest="as_json",
         help="Dump output as JSON.",
     )
+    parser.add_argument(
+        "--gui",
+        action="store_true",
+        help="Open the desktop UI (default when no other action flags are given).",
+    )
     parser.add_argument("--version", action="version", version=f"GWTradeArb {__version__}")
     return parser
+
+
+def _wants_gui(args: argparse.Namespace) -> bool:
+    if args.gui:
+        return True
+    cli_action = any(
+        (
+            args.scan,
+            args.save,
+            args.match,
+            args.search,
+            args.high_only,
+            args.listings,
+            args.stats,
+            args.list,
+            args.mark is not None,
+            args.as_json,
+        )
+    )
+    return not cli_action
 
 
 def _should_fetch(args: argparse.Namespace) -> bool:
@@ -189,6 +214,18 @@ def _list_filter(args: argparse.Namespace) -> str | None:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     db_path = args.db or default_db_path()
+
+    if _wants_gui(args):
+        try:
+            from gwtradearb.ui.window import run_gui
+        except ImportError:
+            print(
+                "PySide6 is required for the GUI. Install with: pip install PySide6",
+                file=sys.stderr,
+            )
+            return 2
+        return run_gui(db_path)
+
     now = time.time()
     now_s = int(now)
     payload: dict = {}
