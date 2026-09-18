@@ -15,10 +15,14 @@ import time
 from gwtradearb import __version__
 from gwtradearb.collect import ALL_SOURCES, collect
 from gwtradearb.database import (
+    MAX_MATCH_LOOKBACK_HOURS,
+    MIN_MATCH_LOOKBACK_HOURS,
     default_db_path,
+    listings_in_lookback_window,
     list_opportunities,
     open_db,
     persist_scan,
+    set_match_lookback_hours,
     set_status,
     stats,
 )
@@ -89,6 +93,22 @@ def _format_stats(payload: dict) -> str:
     )
 
 
+def _parse_lookback_hours(value: str) -> int:
+    try:
+        hours = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("lookback hours must be an integer") from exc
+    if hours < MIN_MATCH_LOOKBACK_HOURS:
+        raise argparse.ArgumentTypeError(
+            f"lookback must be at least {MIN_MATCH_LOOKBACK_HOURS} hours (got {hours})"
+        )
+    if hours > MAX_MATCH_LOOKBACK_HOURS:
+        raise argparse.ArgumentTypeError(
+            f"lookback must be at most {MAX_MATCH_LOOKBACK_HOURS} hours (got {hours})"
+        )
+    return hours
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="gwtradearb",
@@ -139,6 +159,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--db",
         metavar="PATH",
         help="SQLite file (default: platform user-data dir, or GWTRADEARB_DB).",
+    )
+    parser.add_argument(
+        "--lookback-hours",
+        type=_parse_lookback_hours,
+        metavar="HOURS",
+        help=(
+            "Match listings stored in local SQLite whose chat timestamp is "
+            f"within this many hours (default {MIN_MATCH_LOOKBACK_HOURS}, "
+            f"minimum {MIN_MATCH_LOOKBACK_HOURS}, maximum {MAX_MATCH_LOOKBACK_HOURS}). "
+            "Live APIs are not paginated; older rows come from the local DB. "
+            "Stored in settings and used by Scan Now / auto-scan."
+        ),
     )
     parser.add_argument(
         "--stats",
@@ -237,6 +269,9 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 2
+        if args.lookback_hours is not None:
+            with open_db(db_path) as conn:
+                set_match_lookback_hours(conn, args.lookback_hours)
         return run_gui(db_path)
 
     now = time.time()
@@ -268,16 +303,19 @@ def main(argv: list[str] | None = None) -> int:
         listings = result.high_listings if args.high_only else result.listings
         high = len(result.high_listings)
         low = len(result.listings) - high
-        opportunities = match_listings(result.listings) if do_match else []
         show_listings = (not do_match) or args.listings
 
         saved = None
+        opportunities: list[Opportunity] = []
+        lookback_hours = None
+        lookback_listings = None
         if args.save or args.scan:
             with open_db(db_path) as conn:
+                if args.lookback_hours is not None:
+                    set_match_lookback_hours(conn, args.lookback_hours)
                 saved = persist_scan(
                     conn,
                     listings=result.listings,
-                    opportunities=opportunities,
                     requested_sources=sources,
                     fetched_from=result.fetched_from,
                     message_count=len(result.messages),
@@ -285,8 +323,27 @@ def main(argv: list[str] | None = None) -> int:
                     query=args.search,
                     started_at_unix_s=started,
                     finished_at_unix_s=finished,
+                    lookback_hours=args.lookback_hours,
                 )
                 saved["db_path"] = str(db_path)
+            opportunities = saved.pop("matched_opportunities", []) or []
+            lookback_hours = saved.get("lookback_hours")
+            lookback_listings = saved.get("lookback_listings")
+        elif do_match:
+            if args.lookback_hours is not None:
+                with open_db(db_path) as conn:
+                    hours = set_match_lookback_hours(conn, args.lookback_hours)
+                    window = listings_in_lookback_window(
+                        conn,
+                        now_unix_s=finished,
+                        lookback_hours=hours,
+                        extra=result.listings,
+                    )
+                    opportunities = match_listings(window)
+                    lookback_hours = hours
+                    lookback_listings = len(window)
+            else:
+                opportunities = match_listings(result.listings)
 
         if args.as_json:
             payload.update(
@@ -298,6 +355,8 @@ def main(argv: list[str] | None = None) -> int:
                     "errors": result.errors,
                     "db_path": str(db_path) if saved else None,
                     "saved": saved,
+                    "lookback_hours": lookback_hours,
+                    "lookback_listings": lookback_listings,
                 }
             )
             if show_listings:
@@ -313,6 +372,10 @@ def main(argv: list[str] | None = None) -> int:
             )
             if do_match:
                 summary += f"  opportunities={len(opportunities)}"
+            if lookback_hours is not None:
+                summary += f"  lookback={lookback_hours}h"
+                if lookback_listings is not None:
+                    summary += f"  stored={lookback_listings}"
             if saved:
                 summary += f"  saved={db_path}"
                 if saved["expired"]:

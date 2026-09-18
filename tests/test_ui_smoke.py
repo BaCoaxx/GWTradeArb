@@ -24,5 +24,12 @@ def test_main_window_loads_empty_db(tmp_path):
     window.refresh_from_db()
     assert "GWTradeArb" in window.windowTitle()
     assert window.table.columnCount() == 10
+    assert window.lookback_spin.value() == 12
+    assert window.lookback_spin.minimum() == 12
+    window.lookback_spin.setValue(24)
     window.close()
+    from gwtradearb.database import get_match_lookback_hours, open_db
+
+    with open_db(tmp_path / "ui.sqlite") as conn:
+        assert get_match_lookback_hours(conn) == 24
     assert app is not None
