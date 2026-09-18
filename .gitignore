@@ -16,7 +16,7 @@ htmlcov/
 venv/
 env/
 
-# Local secrets / personal data (Phase 3+ SQLite must never be committed)
+# Local secrets / personal data (SQLite must never be committed)
 .env
 .env.*
 *.db
@@ -34,6 +34,6 @@ data/
 .DS_Store
 Thumbs.db
 
-# Packaging (later phases)
-*.spec
+# Packaging outputs (keep packaging/*.spec committed)
 release/
+*.spec.bak

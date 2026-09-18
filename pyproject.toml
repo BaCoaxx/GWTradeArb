@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "gwtradearb"
 version = "0.5.0"
-description = "Phase 5: Kamadan gold WTS/WTB scanner with local SQLite and a PySide6 desktop UI (no automation)."
+description = "Kamadan gold WTS/WTB scanner with local SQLite and a PySide6 UI (no Guild Wars automation)."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
@@ -15,12 +15,15 @@ dependencies = ["PySide6>=6.6"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
+packaging = ["pyinstaller>=6.0"]
 
 [project.scripts]
 gwtradearb = "gwtradearb.cli:main"
 
 [project.urls]
-Homepage = "https://kamadan.decltype.org/"
+Homepage = "https://github.com/BaCoaxx/GWTradeArb"
+Releases = "https://github.com/BaCoaxx/GWTradeArb/releases/latest"
+Issues = "https://github.com/BaCoaxx/GWTradeArb/issues"
 
 [tool.setuptools.packages.find]
 where = ["src"]

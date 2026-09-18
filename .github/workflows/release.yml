@@ -1,0 +1,100 @@
+name: Release builds
+
+# Native archives only. linux-latest produces the Linux tarball;
+# windows-latest produces the Windows zip. This workflow never
+# cross-compiles or relabels a build from the other OS.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            archive: GWTradeArb-Linux-x64.tar.gz
+          - os: windows-latest
+            archive: GWTradeArb-Windows-x64.zip
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Linux Qt runtime libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libegl1 libgl1 libxkbcommon0 libglib2.0-0 \
+            libdbus-1-3 libfontconfig1 libx11-xcb1 libxcb-cursor0 \
+            libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 \
+            libxcb-render-util0 libxcb-shape0 libxcb-xfixes0 libxcb-xinerama0 \
+            libxcb-xkb1 libxkbcommon-x11-0
+
+      - name: Install package and PyInstaller
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]" pyinstaller
+
+      - name: pytest (offline)
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: pytest -m "not network"
+
+      - name: Build native archive
+        run: python packaging/build_release.py
+
+      - name: Smoke packaged binary
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python packaging/smoke_archive.py
+
+      - name: Upload archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.archive }}
+          path: dist/${{ matrix.archive }}
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: List release files
+        run: ls -la artifacts
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/GWTradeArb-Linux-x64.tar.gz
+            artifacts/GWTradeArb-Windows-x64.zip
+          generate_release_notes: true
+          body: |
+            Standalone **x64** builds of GWTradeArb. Python is bundled; you do not need to install it.
+
+            - **Linux:** extract `GWTradeArb-Linux-x64.tar.gz` and run `./GWTradeArb`
+            - **Windows:** extract `GWTradeArb-Windows-x64.zip` and run `GWTradeArb.exe`
+
+            The Windows zip is built on GitHub Actions `windows-latest`. The Linux tarball is built on `ubuntu-latest`. Neither is a cross-compile.
+
+            This tool fetches public Kamadan trade JSON, parses WTS/WTB listings, and shows `potential_difference` spreads. It does **not** automate Guild Wars, send whispers, or store credentials. A positive spread is not guaranteed profit.
+
+            See the README for install-from-source, matching rules, and limitations.
