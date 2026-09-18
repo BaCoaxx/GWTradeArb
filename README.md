@@ -11,7 +11,7 @@ prices**, not guaranteed profit and not an executed trade. The UI never shows a
 "total profit" figure and never asks what you actually paid.
 
 **Latest standalone builds:** [GitHub Releases](https://github.com/BaCoaxx/GWTradeArb/releases/latest)
-(tag `v*`, for example `v0.5.0`). If that page has no assets yet, install from
+(tag `v*`, for example `v0.6.0`). If that page has no assets yet, install from
 source below or run the **Release builds** workflow after the tag is on GitHub.
 
 ## What this is (and is not)
@@ -63,6 +63,24 @@ than misses.
 - Lots are all-or-nothing (`8 for 100k` is not split into 1-of-8).
 - Same player on both sides, or the same message fingerprint, is skipped.
 - `opportunity_key` is a stable SHA-256 across rescans.
+- **Match lookback (default 12 hours):** live decltype / GWToolbox feeds are
+  not paginated (~25 and ~100 latest lines). Every Scan Now / auto-scan still
+  fetches those live pages and upserts them, then rematches **all stored
+  listings whose chat timestamp is within the lookback window** from local
+  SQLite. A WTS that scrolled off the live page remains eligible for a WTB
+  seen minutes or hours later, until it ages out of the window. Listings
+  older than the lookback are not revived. Same-player WTS/WTB skip is
+  unchanged.
+
+The window is the setting `match_lookback_hours` (default **12**, minimum 12,
+maximum 720 / 30 days). Set it in the UI (**Match lookback**) or with
+`--lookback-hours`. Values below 12 are rejected on the CLI and clamped to 12
+if a stored setting is corrupt.
+
+Search endpoints (`/api/search/{query}`, `/s/{query}`) are **not** used to
+backfill the window. Be polite to the public APIs: history comes from SQLite
+after a listing has been seen once. A brand-new database only contains what
+has been scraped since you started scanning.
 
 `Listing.price_amount` is the parsed token (`8 for 100k` is a lot of 8).
 Opportunity prices and `potential_difference` are gold **for the fill
@@ -107,6 +125,7 @@ With no action flags, the desktop UI opens. CLI commands still work:
 
 ```bash
 python -m gwtradearb --scan
+python -m gwtradearb --scan --lookback-hours 24
 python -m gwtradearb --match --search ecto
 python -m gwtradearb --stats
 python -m gwtradearb --list --status traded
@@ -118,6 +137,11 @@ Keyboard in the UI: F5 refresh, Ctrl+R scan, Ctrl+T mark traded, Ctrl+D dismiss.
 Auto-scan: Manual (default) / 1 / 5 / 10 / 30 minutes. Stored in the settings
 table. Do not pick a faster interval — be polite to the public sites.
 
+Match lookback: default 12 hours (minimum 12). The toolbar spin box and
+`--lookback-hours` write `match_lookback_hours` in the same settings table.
+Longer windows (24, 48, 72, or any integer from 12 to 720) rematch more of
+the local history; they do not fetch extra HTTP pages.
+
 ## Database location
 
 - Linux: `~/.local/share/gwtradearb/gwtradearb.sqlite`
@@ -128,8 +152,9 @@ table. Do not pick a faster interval — be polite to the public sites.
 `./data/gwtradearb.sqlite`. Files are gitignored. Schema
 `PRAGMA user_version = 1`.
 
-Settings include `scan_interval_seconds` (`0` = manual) and window size
-placeholders for the UI.
+Settings include `scan_interval_seconds` (`0` = manual),
+`match_lookback_hours` (`12` by default), and window size placeholders for
+the UI.
 
 ## Layout
 
@@ -199,6 +224,8 @@ on `windows-latest`.
 - No ecto↔gold conversion.
 - No Discord / email / in-game notifications.
 - Chat listings vanish. A spread you saw can be gone before you whisper.
+  Lookback rematches local history for 12+ hours; it cannot fetch pages the
+  public APIs no longer return.
 - `potential_difference` is not profit.
 - Packaged builds are x64 only (Linux and Windows). No macOS archive yet;
   run from source on macOS.

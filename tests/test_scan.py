@@ -28,4 +28,5 @@ def test_run_scan_cycle_persists_and_logs(tmp_path):
     assert any("Decltype:" in line for line in logs)
     assert any("Offline" in line for line in logs)
     assert any("Scan complete" in line for line in logs)
+    assert any("Lookback 12h" in line for line in logs)
     assert db.is_file()

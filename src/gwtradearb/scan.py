@@ -13,8 +13,13 @@ from datetime import datetime
 from pathlib import Path
 
 from gwtradearb.collect import ALL_SOURCES, CollectResult, collect
-from gwtradearb.database import open_db, persist_scan
-from gwtradearb.matching import match_listings
+from gwtradearb.database import (
+    DEFAULT_MATCH_LOOKBACK_HOURS,
+    get_match_lookback_hours,
+    open_db,
+    persist_scan,
+    set_match_lookback_hours,
+)
 from gwtradearb.models import Opportunity
 
 LogFn = Callable[[str], None]
@@ -37,6 +42,8 @@ class ScanCycleResult:
     source_online: dict[str, bool] = field(default_factory=dict)
     source_counts: dict[str, int] = field(default_factory=dict)
     log_lines: list[str] = field(default_factory=list)
+    lookback_hours: int = DEFAULT_MATCH_LOOKBACK_HOURS
+    lookback_listings: int = 0
 
 
 def run_scan_cycle(
@@ -45,6 +52,7 @@ def run_scan_cycle(
     sources: tuple[str, ...] = ALL_SOURCES,
     query: str | None = None,
     log: LogFn | None = None,
+    lookback_hours: int | None = None,
 ) -> ScanCycleResult:
     lines: list[str] = []
 
@@ -75,14 +83,14 @@ def run_scan_cycle(
             detail = next((err for err in result.errors if err.startswith(source)), "offline")
             emit(f"{label}: Offline ({detail})")
 
-    opportunities = match_listings(result.listings)
-    emit(f"{len(opportunities)} potential opportunities")
-
     with open_db(db_path) as conn:
+        if lookback_hours is not None:
+            hours = set_match_lookback_hours(conn, lookback_hours)
+        else:
+            hours = get_match_lookback_hours(conn)
         persist = persist_scan(
             conn,
             listings=result.listings,
-            opportunities=opportunities,
             requested_sources=sources,
             fetched_from=result.fetched_from,
             message_count=len(result.messages),
@@ -90,8 +98,16 @@ def run_scan_cycle(
             query=query,
             started_at_unix_s=started,
             finished_at_unix_s=finished,
+            lookback_hours=hours,
         )
     persist["db_path"] = str(db_path)
+    opportunities = persist.pop("matched_opportunities", []) or []
+    lookback_listings = int(persist.get("lookback_listings") or 0)
+    emit(
+        f"Lookback {hours}h: {lookback_listings} stored listings "
+        "(local SQLite; live feeds are not paginated)"
+    )
+    emit(f"{len(opportunities)} potential opportunities")
     emit("Scan complete")
     return ScanCycleResult(
         collect=result,
@@ -100,4 +116,6 @@ def run_scan_cycle(
         source_online=source_online,
         source_counts=source_counts,
         log_lines=lines,
+        lookback_hours=hours,
+        lookback_listings=lookback_listings,
     )

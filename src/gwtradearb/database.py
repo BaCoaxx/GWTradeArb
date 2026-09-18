@@ -25,10 +25,15 @@ SCHEMA_VERSION = 1
 
 STATUSES = ("new", "traded", "dismissed", "expired")
 
+DEFAULT_MATCH_LOOKBACK_HOURS = 12
+MIN_MATCH_LOOKBACK_HOURS = 12
+MAX_MATCH_LOOKBACK_HOURS = 720  # 30 days; matches the retention_days placeholder
+
 DEFAULT_SETTINGS = {
     "scan_interval_seconds": "0",
     "retention_days": "30",
     "expire_absent_on_complete_scan": "1",
+    "match_lookback_hours": str(DEFAULT_MATCH_LOOKBACK_HOURS),
     "ui_theme": "system",
     "ui_window_width": "900",
     "ui_window_height": "600",
@@ -65,6 +70,8 @@ CREATE INDEX IF NOT EXISTS idx_listings_canonical
     ON listings(item_canonical, intent);
 CREATE INDEX IF NOT EXISTS idx_listings_last_seen
     ON listings(last_seen_unix_s);
+CREATE INDEX IF NOT EXISTS idx_listings_timestamp
+    ON listings(timestamp_unix_s);
 
 CREATE TABLE IF NOT EXISTS opportunities (
     opportunity_key TEXT PRIMARY KEY,
@@ -173,13 +180,14 @@ def connect(path: str | Path | None = None) -> sqlite3.Connection:
 
 def init_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA_SQL)
+    # Always seed newly added keys; never overwrite values the user already set.
+    for key, value in DEFAULT_SETTINGS.items():
+        conn.execute(
+            "INSERT OR IGNORE INTO settings(key, value) VALUES (?, ?)",
+            (key, value),
+        )
     current = int(conn.execute("PRAGMA user_version").fetchone()[0])
     if current == 0:
-        for key, value in DEFAULT_SETTINGS.items():
-            conn.execute(
-                "INSERT OR IGNORE INTO settings(key, value) VALUES (?, ?)",
-                (key, value),
-            )
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     elif current > SCHEMA_VERSION:
         raise RuntimeError(
@@ -213,6 +221,48 @@ def set_setting(conn: sqlite3.Connection, key: str, value: str) -> None:
         "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
         (key, value),
     )
+
+
+def normalize_match_lookback_hours(
+    value: Any,
+    *,
+    default: int = DEFAULT_MATCH_LOOKBACK_HOURS,
+) -> int:
+    """Clamp a lookback setting to [MIN, MAX] hours. Invalid values use default."""
+    try:
+        hours = int(str(value).strip())
+    except (TypeError, ValueError, AttributeError):
+        hours = default
+    if hours < MIN_MATCH_LOOKBACK_HOURS:
+        return MIN_MATCH_LOOKBACK_HOURS
+    if hours > MAX_MATCH_LOOKBACK_HOURS:
+        return MAX_MATCH_LOOKBACK_HOURS
+    return hours
+
+
+def get_match_lookback_hours(conn: sqlite3.Connection) -> int:
+    raw = get_setting(
+        conn, "match_lookback_hours", str(DEFAULT_MATCH_LOOKBACK_HOURS)
+    )
+    return normalize_match_lookback_hours(raw)
+
+
+def set_match_lookback_hours(conn: sqlite3.Connection, hours: int | str) -> int:
+    normalised = normalize_match_lookback_hours(hours)
+    set_setting(conn, "match_lookback_hours", str(normalised))
+    return normalised
+
+
+def lookback_cutoff_unix_s(
+    now_unix_s: int,
+    lookback_hours: int | None = None,
+) -> int:
+    hours = (
+        DEFAULT_MATCH_LOOKBACK_HOURS
+        if lookback_hours is None
+        else normalize_match_lookback_hours(lookback_hours)
+    )
+    return int(now_unix_s) - hours * 3600
 
 
 def upsert_listings(
@@ -540,7 +590,7 @@ def persist_scan(
     conn: sqlite3.Connection,
     *,
     listings: Sequence[Listing],
-    opportunities: Sequence[Opportunity],
+    opportunities: Sequence[Opportunity] | None = None,
     requested_sources: Sequence[str],
     fetched_from: Sequence[str],
     message_count: int,
@@ -548,8 +598,16 @@ def persist_scan(
     query: str | None,
     started_at_unix_s: int,
     finished_at_unix_s: int,
+    lookback_hours: int | None = None,
 ) -> dict[str, Any]:
-    """Upsert a scan's listings and opportunities. Never deletes history."""
+    """Upsert a scan's listings and opportunities. Never deletes history.
+
+    When ``opportunities`` is omitted, listings are rematched from local SQLite
+    using ``match_lookback_hours`` (default 12h). Live feeds are not paginated;
+    older rows already stored in this DB stay eligible until they age out.
+    """
+    from gwtradearb.matching import match_listings
+
     scan_id = start_scan(
         conn,
         started_at_unix_s=started_at_unix_s,
@@ -564,6 +622,19 @@ def persist_scan(
         now_unix_s=finished_at_unix_s,
         reset_seen=reset_seen,
     )
+    hours = (
+        get_match_lookback_hours(conn)
+        if lookback_hours is None
+        else normalize_match_lookback_hours(lookback_hours)
+    )
+    window = listings_in_lookback_window(
+        conn,
+        now_unix_s=finished_at_unix_s,
+        lookback_hours=hours,
+        extra=listings,
+    )
+    if opportunities is None:
+        opportunities = match_listings(window)
     seen_keys = upsert_opportunities(conn, opportunities, now_unix_s=finished_at_unix_s)
     expired = expire_absent_opportunities(
         conn,
@@ -591,6 +662,9 @@ def persist_scan(
         "expired": expired,
         "complete": complete,
         "db_path": None,
+        "matched_opportunities": list(opportunities),
+        "lookback_hours": hours,
+        "lookback_listings": len(window),
     }
 
 
@@ -710,41 +784,79 @@ def stats(conn: sqlite3.Connection) -> dict[str, Any]:
     }
 
 
+def _listing_from_row(row: sqlite3.Row) -> Listing:
+    reasons = tuple(json.loads(row["reasons"] or "[]"))
+    price = Decimal(row["price_amount"]) if row["price_amount"] is not None else None
+    raw = RawMessage(
+        source=row["source"],
+        native_id=row["native_id"],
+        timestamp_unix_s=int(row["timestamp_unix_s"]),
+        player=row["player"],
+        message=row["original_message"],
+        replaces_id=row["replaces_id"],
+        content_fingerprint=row["fingerprint"],
+    )
+    return Listing(
+        raw=raw,
+        intent=row["intent"],
+        item=row["item_raw"],
+        quantity=row["quantity"],
+        quantity_unit=row["quantity_unit"],
+        price_amount=price,
+        price_unit=row["price_unit"],
+        parse_confidence=row["parse_confidence"],
+        raw_span=row["raw_span"],
+        reasons=reasons,
+    )
+
+
 def load_listings(
     conn: sqlite3.Connection,
     *,
     last_scan_only: bool = False,
+    since_unix_s: int | None = None,
 ) -> list[Listing]:
-    """Rehydrate Listing atoms (for tests / later UI)."""
-    sql = "SELECT * FROM listings"
+    """Rehydrate Listing atoms (for tests, lookback matching, later UI)."""
+    clauses: list[str] = []
+    params: list[Any] = []
     if last_scan_only:
-        sql += " WHERE seen_in_last_scan = 1"
+        clauses.append("seen_in_last_scan = 1")
+    if since_unix_s is not None:
+        clauses.append("timestamp_unix_s >= ?")
+        params.append(int(since_unix_s))
+    sql = "SELECT * FROM listings"
+    if clauses:
+        sql += " WHERE " + " AND ".join(clauses)
     sql += " ORDER BY timestamp_unix_s DESC"
-    out: list[Listing] = []
-    for row in conn.execute(sql):
-        reasons = tuple(json.loads(row["reasons"] or "[]"))
-        price = Decimal(row["price_amount"]) if row["price_amount"] is not None else None
-        raw = RawMessage(
-            source=row["source"],
-            native_id=row["native_id"],
-            timestamp_unix_s=int(row["timestamp_unix_s"]),
-            player=row["player"],
-            message=row["original_message"],
-            replaces_id=row["replaces_id"],
-            content_fingerprint=row["fingerprint"],
-        )
-        out.append(
-            Listing(
-                raw=raw,
-                intent=row["intent"],
-                item=row["item_raw"],
-                quantity=row["quantity"],
-                quantity_unit=row["quantity_unit"],
-                price_amount=price,
-                price_unit=row["price_unit"],
-                parse_confidence=row["parse_confidence"],
-                raw_span=row["raw_span"],
-                reasons=reasons,
-            )
-        )
-    return out
+    return [_listing_from_row(row) for row in conn.execute(sql, params)]
+
+
+def listings_in_lookback_window(
+    conn: sqlite3.Connection,
+    *,
+    now_unix_s: int,
+    lookback_hours: int | None = None,
+    extra: Sequence[Listing] = (),
+) -> list[Listing]:
+    """Listings to rematch: SQLite history in the lookback window, plus extras.
+
+    Stored rows are eligible when their chat ``timestamp_unix_s`` is within the
+    window (not ``last_seen``). That keeps lines that scrolled off the live
+    page but are still recent, and skips ancient history.
+
+    ``extra`` is the current scrape: those atoms always participate (they are
+    live right now) and win on ``listing_key`` collisions. Search APIs are not
+    used to backfill the window.
+    """
+    hours = (
+        get_match_lookback_hours(conn)
+        if lookback_hours is None
+        else normalize_match_lookback_hours(lookback_hours)
+    )
+    cutoff = lookback_cutoff_unix_s(now_unix_s, hours)
+    combined: dict[str, Listing] = {}
+    for listing in load_listings(conn, since_unix_s=cutoff):
+        combined[listing_key(listing)] = listing
+    for listing in extra:
+        combined[listing_key(listing)] = listing
+    return list(combined.values())

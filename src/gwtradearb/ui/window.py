@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
+    QSpinBox,
     QSplitter,
     QStatusBar,
     QTableWidget,
@@ -35,10 +36,15 @@ from PySide6.QtWidgets import (
 
 from gwtradearb import __version__
 from gwtradearb.database import (
+    DEFAULT_MATCH_LOOKBACK_HOURS,
+    MAX_MATCH_LOOKBACK_HOURS,
+    MIN_MATCH_LOOKBACK_HOURS,
     default_db_path,
+    get_match_lookback_hours,
     get_setting,
     list_opportunity_details,
     open_db,
+    set_match_lookback_hours,
     set_setting,
     set_status,
     stats,
@@ -102,6 +108,7 @@ class MainWindow(QMainWindow):
         self._restore_size()
         self._build()
         self._load_interval_setting()
+        self._load_lookback_setting()
         self.refresh_from_db()
         self._append_log(
             "Ready. Scrape → parse → display only; never automates Guild Wars. "
@@ -138,6 +145,21 @@ class MainWindow(QMainWindow):
             self.interval_combo.addItem(label, seconds)
         self.interval_combo.currentIndexChanged.connect(self._on_interval_changed)
         toolbar.addWidget(self.interval_combo)
+
+        toolbar.addSeparator()
+        toolbar.addWidget(QLabel(" Match lookback: "))
+        self.lookback_spin = QSpinBox()
+        self.lookback_spin.setRange(MIN_MATCH_LOOKBACK_HOURS, MAX_MATCH_LOOKBACK_HOURS)
+        self.lookback_spin.setValue(DEFAULT_MATCH_LOOKBACK_HOURS)
+        self.lookback_spin.setSuffix(" hours")
+        self.lookback_spin.setToolTip(
+            "Rematch local SQLite listings whose chat timestamp is within this "
+            "many hours. Default 12; longer windows are allowed. Live APIs are "
+            "not paginated, so older rows come from history already stored here."
+        )
+        self.lookback_spin.setMinimumWidth(120)
+        self.lookback_spin.valueChanged.connect(self._on_lookback_changed)
+        toolbar.addWidget(self.lookback_spin)
 
         toolbar.addSeparator()
         self.decltype_badge = QLabel("Decltype: —")
@@ -304,6 +326,29 @@ class MainWindow(QMainWindow):
         self.interval_combo.setCurrentIndex(idx)
         self.interval_combo.blockSignals(False)
         self._apply_timer(seconds)
+
+    def _load_lookback_setting(self) -> None:
+        hours = DEFAULT_MATCH_LOOKBACK_HOURS
+        try:
+            with open_db(self.db_path) as conn:
+                hours = get_match_lookback_hours(conn)
+        except OSError:
+            hours = DEFAULT_MATCH_LOOKBACK_HOURS
+        self.lookback_spin.blockSignals(True)
+        self.lookback_spin.setValue(hours)
+        self.lookback_spin.blockSignals(False)
+
+    def _on_lookback_changed(self, hours: int) -> None:
+        try:
+            with open_db(self.db_path) as conn:
+                stored = set_match_lookback_hours(conn, hours)
+        except OSError as exc:
+            self._append_log(f"Could not save lookback: {exc}")
+            return
+        self._append_log(
+            f"Match lookback set to {stored} hours "
+            "(rematch from local SQLite; live feeds are not paginated)."
+        )
 
     def _on_interval_changed(self) -> None:
         seconds = int(self.interval_combo.currentData() or 0)
