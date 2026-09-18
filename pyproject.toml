@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gwtradearb"
+version = "0.2.0"
+description = "Phase 2: scrape, parse, and display Guild Wars Kamadan trade listings (no automation)."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "GWTradeArb" }]
+keywords = ["guild-wars", "kamadan", "trade", "scanner"]
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+gwtradearb = "gwtradearb.cli:main"
+
+[project.urls]
+Homepage = "https://kamadan.decltype.org/"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+markers = [
+    "network: live HTTP against public Kamadan APIs (skip with -m 'not network')",
+]

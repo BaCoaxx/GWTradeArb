@@ -1,0 +1,4 @@
+# Runtime is Python 3.11+ stdlib only.
+# Install the package itself in editable mode: pip install -e .
+# Test extras:
+pytest>=8.0
